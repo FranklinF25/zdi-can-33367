@@ -101,7 +101,7 @@ user feed it splice-backed frags? Verdicts:
 | `__pskb_copy_fclone()` — skbuff.c:2225 | copies an skb, optionally reffing the original frags into the copy | `skb_shinfo(n)->flags \|= skb_shinfo(skb)->flags & SKBFL_SHARED_FRAG;` at :2260 | **PRESERVED** (gap-1 fix verified) |
 | `skb_shift()` — skbuff.c:4274 | TCP SACK: shifts frag descriptors between adjacent skbs | propagation into `tgt` at :4385 | **PRESERVED** (gap-1 fix verified) |
 | `skb_try_coalesce()` — skbuff.c:6172 | GRO/coalescing: memcpy's `from`'s frags into `to` (:6238-6241) | propagation at :6243, guarded by `nr_frags` | **PRESERVED** (gap-2 fix verified) |
-| `skb_segment()` — skbuff.c:~4900s | GSO software segmentation: builds `nskb`s sharing source frags | ORs marker from `head_skb`/`frag_skb` at :4997-4999 and from list skbs at :5016; additionally re-checks `skb_has_shared_frag(nskb)` at :5070 before allowing no-SG segmentation | **PRESERVED** |
+| `skb_segment()` — skbuff.c:4777 | GSO software segmentation: builds `nskb`s sharing source frags | ORs marker from `head_skb`/`frag_skb` at :4997-4999 and from list skbs at :5016; additionally re-checks `skb_has_shared_frag(nskb)` at :5070 before allowing no-SG segmentation | **PRESERVED** |
 | `skb_split()` — skbuff.c:4231 | splits one skb into two at `len` | `zc_flags = SKBFL_SHARED_FRAG \| SKBFL_PURE_ZEROCOPY` (:4234), propagated into `skb1` (:4238) | **PRESERVED** |
 
 The two unprivileged-reachable **callers** that feed `skb_zerocopy()`:
@@ -116,9 +116,9 @@ The two unprivileged-reachable **callers** that feed `skb_zerocopy()`:
 | Helper (v7.2 location) | What it does | Verdict |
 |---|---|---|
 | `__pskb_pull_tail()` — skbuff.c:2875 | pulls frag bytes into the linear head by **copying** (memcpy into private head); shrinks/merges the skb's own frags | N.A. — makes bytes private; it is the mechanism `skb_cow_data()` uses to sanitize |
-| `pskb_expand_head()` — skbuff.c:2294 | reallocates the linear head; the `shinfo` block (including `flags`) is carried to the new head; frags never leave the skb | **PRESERVED** by construction (metadata moves with the frags it describes) |
+| `pskb_expand_head()` — skbuff.c:2294 | reallocates the linear head; the whole `shinfo` block — `flags` included — is memcpy'd to the new head (skbuff.c:2322-2324); frags never leave the skb | **PRESERVED** by construction (metadata moves with the frags it describes) |
 | `skb_copy_ubufs()` — skbuff.c:1997 | copies ubuf-backed frags into private kernel pages | N.A.-COPIES-PAGES — privatizes by design |
-| `skb_copy_expand()` — skbuff.c:~2470 (export at :2548) | full deep copy | N.A.-COPIES-PAGES |
+| `skb_copy_expand()` — skbuff.c:2502 | full deep copy | N.A.-COPIES-PAGES |
 | `pskb_carve` family — skbuff.c:6993, :7025-7041 | TCP receive carve: splits an skb/frag_list; children keep their own `shinfo`; clones share `shinfo` by design | N.A. — no cross-skb descriptor handoff |
 | `skb_clone_fraglist()` — skbuff.c:922 | clones the frag_list (child skbs) of a cloned skb | N.A. — child skbs carry their own marker; clones share `shinfo` with the original |
 | `skb_splice_bits()` — skbuff.c:3263 | skb → **pipe** (receive-side splice-out): pages referenced into pipe buffers | N.A. — not an skb→skb transfer (it is the read-side cousin of the planting primitive) |

@@ -12,9 +12,11 @@
 #
 # NOTE (lab fact, verified against the v7.2 tree): the hunk's trailing
 # context (`from->unreadable`, from the in-flight devmem series) does not
-# exist in v7.2, so `git apply` rejects the hunk; lab/scripts/build.sh
-# applies it with `patch -p1 -F3` and asserts the resulting tree delta is
-# exactly the 2 added lines below.
+# exist in v7.2, so `git apply` rejects the hunk — and `patch -F3`
+# measurably MISPLACES the line. lab/scripts/build.sh therefore applies
+# the trimmed-context variant with `patch -F0` (awk insertion as final
+# fallback) and asserts the resulting tree delta is exactly the 2 added
+# lines below.
 From: Zizhen Liu <pointerliu@126.com>
 Date: Thu, 22 Oct 2026 18:42:17 +0800
 Subject: [PATCH v2 net] net: skbuff: propagate shared-frag marker in
