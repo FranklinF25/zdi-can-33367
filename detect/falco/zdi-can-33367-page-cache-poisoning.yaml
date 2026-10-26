@@ -1,0 +1,88 @@
+# ZDI-CAN-33367 page-cache poisoning — open-Falco adaptation.
+#
+# Adapted (with attribution) from the detection concept published by the
+# Sysdig Threat Research Team: rule "Page Cache Poisoning via Spliced File
+# Pages to Loopback" (Sysdig Secure Runtime Behavioral Analytics,
+# 2026-10-24). The Sysdig rule matches the full syscall sequence; stock
+# Falco is stateless, so this adaptation splits the signal into a prep
+# rule and a trigger rule. See detect/README.md for tuning and limits.
+#
+# Sequence being approximated (all from one unprivileged process):
+#   unshare(CLONE_NEWUSER|CLONE_NEWNET) -> sysctls -> nlmon up ->
+#   XFRM state (netlink) -> nftables NFQUEUE rule -> tc pedit + redirect ->
+#   splice(file -> socket on 127.0.0.1)   <-- trigger; page-cache write fires
+#
+# SPDX-License-Identifier: Apache-2.0
+# Author: FranklinF25 — zdi-can-33367 research repo
+
+- list: zdi_33367_unprivileged_users
+  items: [root]
+
+- macro: zdi_33367_unprivileged
+  condition: (not user.name in (zdi_33367_unprivileged_users) and user.uid != 0)
+
+# ---------------------------------------------------------------------------
+# Prep: unprivileged user/network namespace creation (broad, contextual).
+# The public PoC starts here; so do rootless containers and some browsers.
+# ---------------------------------------------------------------------------
+- rule: ZDI-CAN-33367 Prep - Unprivileged user namespace unshare
+  desc: >
+    An unprivileged process called unshare(2) with CLONE_NEWUSER and/or
+    CLONE_NEWNET. This is step 1 of the ZDI-CAN-33367 page-cache poisoning
+    chain (skb_zerocopy shared-frag flag drop, public PoC via ZDI's LKML
+    report) and also of ordinary rootless tooling - use as context and tune
+    per site. On hosts where unprivileged user namespaces are disabled
+    (user.max_user_namespaces=0), treat as a policy-bypass attempt.
+  condition: >
+    evt.type = unshare and evt.dir = < and
+    (evt.arg.flags contains CLONE_NEWUSER or evt.arg.flags contains CLONE_NEWNET) and
+    zdi_33367_unprivileged
+  output: >
+    ZDI-CAN-33367 prep: unshare(%evt.arg.flags) by unprivileged user
+    (user=%user.name uid=%user.uid proc=%proc.name exe=%proc.exepath
+    parent=%proc.pname cmdline=%proc.cmdline)
+  priority: WARNING
+  tags: [kernel, lpe, zdi_can_33367, t1550_area_privilege_escalation]
+
+# ---------------------------------------------------------------------------
+# Trigger: unprivileged splice() touching a loopback socket (rare, sharp).
+# The PoC splices read-only file pages into a socket on 127.0.0.1; the
+# in-place ESP decrypt over those pages is the page-cache write itself.
+# ---------------------------------------------------------------------------
+- rule: ZDI-CAN-33367 Trigger - Splice into loopback socket by unprivileged user
+  desc: >
+    An unprivileged process called splice(2) on a socket connected to
+    127.0.0.1. The public ZDI-CAN-33367 PoC uses exactly this shape to feed
+    page-cache pages of a read-only file to the kernel's ESP in-place
+    decrypt path. Legitimate splices into loopback sockets are rare -
+    verify any hit; escalate when the same process previously created user
+    and network namespaces.
+  condition: >
+    evt.type = splice and evt.dir = < and
+    (fd.name contains "127.0.0.1" or fd.sip = "127.0.0.1" or fd.cip = "127.0.0.1") and
+    zdi_33367_unprivileged
+  output: >
+    ZDI-CAN-33367 trigger: splice() to loopback socket by unprivileged user
+    (user=%user.name uid=%user.uid proc=%proc.name exe=%proc.exepath
+    parent=%proc.pname cmdline=%proc.cmdline fd=%fd.name fdtype=%fd.type)
+  priority: CRITICAL
+  tags: [kernel, lpe, zdi_can_33367, t1550_area_privilege_escalation]
+
+# ---------------------------------------------------------------------------
+# Optional stricter variant (disabled by default): on some Falco builds
+# netlink sockets render as fd.name startswith "nl:". Uncomment after
+# validating on your sensors; keys on unprivileged writes to XFRM/netfilter
+# netlink sockets (steps 3-4 of the chain).
+#
+# - rule: ZDI-CAN-33367 Prep - Unprivileged netlink XFRM/nftables writes
+#   desc: Unprivileged process wrote to a netlink socket (XFRM state or
+#         nftables NFQUEUE setup - steps 3-4 of the ZDI-CAN-33367 chain).
+#   condition: >
+#     evt.type in (sendto, sendmsg, sendmmsg) and evt.dir = < and
+#     fd.name startswith "nl:" and zdi_33367_unprivileged
+#   output: >
+#     ZDI-CAN-33367 prep: netlink write by unprivileged user
+#     (user=%user.name uid=%user.uid proc=%proc.name fd=%fd.name)
+#   priority: NOTICE
+#   tags: [kernel, lpe, zdi_can_33367]
+# ---------------------------------------------------------------------------
