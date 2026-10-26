@@ -1,0 +1,11 @@
+.atl
+odd/
+__pycache__/
+*.pyc
+core
+core.*
+*.core
+lab/.env
+
+lab/out/
+lab/kernel/src/
