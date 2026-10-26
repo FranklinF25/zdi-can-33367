@@ -1,0 +1,57 @@
+# ZDI-CAN-33367 lab kernel config fragment
+# Applied on top of x86_64 defconfig. Everything =y — no modules, no
+# userspace modprobe. Purpose: run the full public PoC chain (userns+netns
+# unshare -> nlmon -> loopback XFRM/ESP -> nftables NFQUEUE -> tc u32 +
+# pedit + mirred) plus the AF_ALG crypto self-checks inside the guest.
+
+# No modules at all: the initramfs has no kmod, and disabling modules also
+# drops CONFIG_MODULE_SIG (so the build needs no openssl headers).
+# CONFIG_MODULES is not set
+
+# --- user + network namespaces (chain entry: unshare(CLONE_NEWUSER|CLONE_NEWNET))
+CONFIG_USER_NS=y
+CONFIG_NET_NS=y
+
+# --- XFRM user API + loopback ESP states (transport mode, hmac(sha256)-128
+#     + cbc(aes)); INET6_ESP keeps the esp6 input path built for parity.
+CONFIG_XFRM_USER=y
+CONFIG_IPV6=y
+CONFIG_INET_ESP=y
+CONFIG_INET6_ESP=y
+
+# --- crypto chain for ESP ("authenc(hmac(sha256),cbc(aes))" template) and
+#     the AF_ALG self-checks used by poc/detector.c (aead/hash/skcipher).
+CONFIG_CRYPTO_HMAC=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_CBC=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_AES_NI_INTEL=y
+CONFIG_CRYPTO_AUTHENC=y
+CONFIG_CRYPTO_USER_API=y
+CONFIG_CRYPTO_USER_API_AEAD=y
+CONFIG_CRYPTO_USER_API_HASH=y
+CONFIG_CRYPTO_USER_API_SKCIPHER=y
+
+# --- NFQUEUE + nftables (the LOCAL_OUT base chain that queues the splice-
+#     backed UDP packet; nfnetlink_queue builds its message with
+#     skb_zerocopy() — the vulnerable helper).
+CONFIG_NETFILTER_NETLINK_QUEUE=y
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NFT_QUEUE=y
+
+# --- nlmon capture device + tc pieces (clsact lives under sch_ingress;
+#     u32 classifier matches everything, pedit rewrites the linear prefix
+#     into a valid ESP packet, mirred redirects it to lo).
+CONFIG_NLMON=y
+CONFIG_NET_SCHED=y
+CONFIG_NET_SCH_INGRESS=y
+CONFIG_NET_CLS_U32=y
+CONFIG_NET_ACT_PEDIT=y
+CONFIG_NET_ACT_MIRRED=y
+
+# --- guest devices / console (defconfig usually has these; enforce anyway)
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_DEVTMPFS=y

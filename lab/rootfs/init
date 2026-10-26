@@ -1,0 +1,63 @@
+#!/bin/busybox sh
+# ZDI-CAN-33367 lab init — runs as PID 1 from the initramfs.
+#
+# Boot -> mount basics -> stage the SUID target on the ext4 probe disk and
+# bind-mount it over /usr/bin (splice needs a real filesystem; ramfs copy
+# stays as fallback) -> run the A/B oracle as uid 1000:
+#     /tools/detector  (safe differential oracle, poc/detector.c)
+#     /tools/lpe       (in-lab closure against /usr/bin/secretgate only)
+# -> power off. Robust if a tool fails: rc is still printed.
+
+/bin/busybox mount -t proc proc /proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+FLAVOR=unknown
+for a in $(cat /proc/cmdline); do
+    case "$a" in flavor=*) FLAVOR="${a#flavor=}" ;; esac
+done
+
+echo "LAB-BOOT-OK $(/bin/busybox uname -r) FLAVOR=$FLAVOR"
+
+# ---- probe disk: real filesystem backing for the SUID LPE target ----
+PROBE_ROOT=/tmp
+if [ -b /dev/vda ]; then
+    if /bin/busybox mount -t ext4 /dev/vda /mnt/probe 2>/dev/null; then
+        echo "PROBE-DISK ext4 /dev/vda"
+        PROBE_ROOT=/mnt/probe
+        # The LPE allowlists exactly /usr/bin/secretgate. Put the ext4
+        # copy AT that path: stage it on the probe disk and bind-mount
+        # the directory over /usr/bin. The attack then hits a
+        # splice-able, disk-backed SUID file (disk-clean proof target).
+        /bin/busybox mkdir -p /mnt/probe/labbin
+        /bin/busybox cp /usr/bin/secretgate /mnt/probe/labbin/secretgate
+        /bin/busybox chown 0:0 /mnt/probe/labbin/secretgate
+        /bin/busybox chmod 4755 /mnt/probe/labbin/secretgate
+        if /bin/busybox mount -o bind /mnt/probe/labbin /usr/bin 2>/dev/null; then
+            echo "SG-STAGED path=/usr/bin/secretgate backing=ext4:/labbin/secretgate mode=4755"
+        else
+            echo "SG-STAGED bind-mount-failed, /usr/bin/secretgate stays initramfs-backed (splice may fail)"
+        fi
+    else
+        echo "PROBE-DISK mount-failed, falling back to /tmp (ramfs)"
+    fi
+fi
+
+# ---- run the oracle as uid 1000 ----
+RUNAS=""
+if [ -x /bin/setpriv ]; then
+    RUNAS="/bin/setpriv --reuid=1000 --regid=1000 --clear-groups"
+    echo "RUNAS setpriv uid=1000"
+else
+    echo "RUNAS direct (busybox setpriv unavailable; tools self-drop where needed)"
+fi
+
+$RUNAS /tools/detector "$PROBE_ROOT"
+echo "DETECTOR-RC=$?"
+
+$RUNAS /tools/lpe
+echo "LPE-RC=$?"
+
+echo "LAB-DONE"
+
+/bin/busybox poweroff -f
