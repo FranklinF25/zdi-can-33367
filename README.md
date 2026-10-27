@@ -43,11 +43,13 @@ and a working public PoC already circulates via ZDI's LKML disclosure mail.
 
 ```bash
 # build the A/B kernels + tools in Docker (prerequisites in the lab README)
+# first build ~17 min (two kernels from one tree; cached re-runs take seconds)
 lab/scripts/build.sh
 
-# boot the A/B oracle (QEMU in Docker, KVM if available)
-lab/scripts/run.sh vuln     # DETECTOR-RESULT: VULNERABLE + LPE-RESULT: ROOT-FLAG-CAPTURED + DISKCLEAN=ok
-lab/scripts/run.sh patched  # DETECTOR-RESULT: NOT-DETECTED + LPE NOT-VULNERABLE
+# boot the A/B oracle (QEMU in Docker, KVM if available; ~11-12 s per flavor)
+# observed 2026-10-27, tools running as real uid 1000:
+lab/scripts/run.sh vuln     # DETECTOR-RESULT: VULNERABLE + LPE-RESULT: ROOT-FLAG-CAPTURED flag{zerofrag-lpe-in-lab} + DISKCLEAN=ok
+lab/scripts/run.sh patched  # DETECTOR-RESULT: NOT-DETECTED + LPE NOT-VULNERABLE (gate stays GATELOCK)
 ```
 
 ## What is original here vs prior work

