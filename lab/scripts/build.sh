@@ -193,50 +193,53 @@ if [ -f "$TREE/.lab-patched" ]; then
     log "tree already patched, skipping application"
 else
 log "applying $(basename "$PATCHFILE")"
-if git -C "$TREE" apply "$PATCHFILE" 2>>"$LOGS/patch.log"; then
-    log "git apply succeeded"
+# Every application path is verified by CONTENT afterwards: tool exit
+# codes alone lie on this vendored mail. Measured in this lab: git 2.43
+# parses the file as zero diffs yet returns rc=0 (a silent no-op — a
+# "git apply succeeded" with an untouched tree), and the trimmed-context
+# `patch -F0` variant misses the hunk on GNU patch 2.7. `patch -F3` is
+# known to MISPLACE the line into skb_copy_and_csum_dev() and is never
+# used. The deterministic path is the awk insertion of the vendored +
+# lines (measured byte-exact on v7.2), so it runs FIRST; git apply and
+# the trimmed variant stay as content-verified fallbacks for tree drift.
+landed() {
+    [ "$(skb_func_body "$TREE/net/core/skbuff.c" | grep -cF 'SKBFL_SHARED_FRAG' || true)" -eq 1 ]
+}
+TAB=$(printf '\t')
+sed -n '/^@@/,$p' "$PATCHFILE" | grep '^+' | grep -v '^+++' \
+    | sed 's/^+//' >"$OUT/vendored-addlines.txt"
+NRFRAGS="${TAB}skb_shinfo(to)->nr_frags = j;"
+awk -v nf="$NRFRAGS" -v addfile="$OUT/vendored-addlines.txt" '
+    BEGIN { while ((getline l < addfile) > 0) add[nadd++] = l }
+    /^skb_zerocopy\(struct sk_buff \*to/ { infn = 1 }
+    infn && !done && seen && /^$/ {
+        print
+        for (i = 0; i < nadd; i++) print add[i]
+        done = 1
+        next
+    }
+    infn && $0 == nf { seen = 1 }
+    { print }
+' "$TREE/net/core/skbuff.c" >"$OUT/skbuff.c.patched"
+[ "$(wc -l <"$OUT/skbuff.c.patched")" -ge "$(wc -l <"$TREE/net/core/skbuff.c")" ] \
+    || { echo "FATAL: awk application produced a short file"; exit 1; }
+mv "$OUT/skbuff.c.patched" "$TREE/net/core/skbuff.c"
+if landed; then
+    log "applied the vendored + lines with awk (verified in-function)"
+elif git -C "$TREE" apply "$PATCHFILE" 2>>"$LOGS/patch.log" && landed; then
+    log "git apply succeeded (verified)"
 else
-    # The vendored hunk's 3 trailing context lines (`from->unreadable`...)
-    # belong to the in-flight devmem series and do NOT exist in v7.2, so
-    # git apply (no fuzz support) rejects it — and measured against the
-    # real v7.2 tree, `patch -F3` MISPLACES the line into
-    # skb_copy_and_csum_dev(). Deterministic fallback, applied in order:
-    #   2) a trimmed-context variant (keep every +/- line and the 3
-    #      leading context lines byte-for-byte, drop only the 3 absent
-    #      trailing context lines) via patch -F0;
-    #   3) an awk insertion whose bytes are extracted from the vendored
-    #      patch's own + lines, inserted after the nr_frags line inside
-    #      skb_zerocopy().
-    # Whichever path runs, the assertions below verify the landing site
-    # against the vendored additions byte-for-byte.
-    TAB=$(printf '\t')
     TRIMSTART="^ ${TAB}if (i > 0 && from->unreadable)\$"
     sed -e 's/^@@ -3942,6 +3942,8 @@/@@ -3942,3 +3942,5 @@/' \
         -e "/${TRIMSTART}/,/^ \$/d" \
         "$PATCHFILE" >"$OUT/0001-trimmed-context.patch"
-    if patch -d "$TREE" -p1 -F0 --no-backup-if-mismatch \
-            <"$OUT/0001-trimmed-context.patch" >>"$LOGS/patch.log" 2>&1; then
-        log "applied via patch -F0 on the trimmed-context variant"
+    patch -d "$TREE" -p1 -F0 --no-backup-if-mismatch \
+        <"$OUT/0001-trimmed-context.patch" >>"$LOGS/patch.log" 2>&1
+    if landed; then
+        log "applied via patch -F0 on the trimmed-context variant (verified)"
     else
-        log "patch -F0 rejected too; applying the vendored + lines with awk"
-        sed -n '/^@@/,$p' "$PATCHFILE" | grep '^+' | grep -v '^+++' \
-            | sed 's/^+//' >"$OUT/vendored-addlines.txt"
-        NRFRAGS="${TAB}skb_shinfo(to)->nr_frags = j;"
-        awk -v nf="$NRFRAGS" -v addfile="$OUT/vendored-addlines.txt" '
-            BEGIN { while ((getline l < addfile) > 0) add[nadd++] = l }
-            /^skb_zerocopy\(struct sk_buff \*to/ { infn = 1 }
-            infn && !done && seen && /^$/ {
-                print
-                for (i = 0; i < nadd; i++) print add[i]
-                done = 1
-                next
-            }
-            infn && $0 == nf { seen = 1 }
-            { print }
-        ' "$TREE/net/core/skbuff.c" >"$OUT/skbuff.c.patched"
-        [ "$(wc -l <"$OUT/skbuff.c.patched")" -ge "$(wc -l <"$TREE/net/core/skbuff.c")" ] \
-            || { echo "FATAL: awk application produced a short file"; exit 1; }
-        mv "$OUT/skbuff.c.patched" "$TREE/net/core/skbuff.c"
+        echo "FATAL: no application path landed the vendored fix inside skb_zerocopy()"
+        exit 1
     fi
 fi
 touch "$TREE/.lab-patched"
@@ -296,7 +299,7 @@ rm -rf "$IRD"
 mkdir -p "$IRD/bin" "$IRD/dev" "$IRD/proc" "$IRD/sys" "$IRD/tools" \
          "$IRD/usr/bin" "$IRD/root" "$IRD/etc" "$IRD/mnt/probe" "$IRD/tmp"
 install -m 0755 /bin/busybox "$IRD/bin/busybox"
-for app in sh mount umount poweroff uname echo cat sleep mdev mkdir cp chown chmod; do
+for app in sh su mount umount poweroff uname echo cat sleep mdev mkdir cp chown chmod grep; do
     ln -sf busybox "$IRD/bin/$app"
 done
 # busybox setpriv (uid 1000 drop in init) — only if this busybox has it

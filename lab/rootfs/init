@@ -25,6 +25,9 @@ if [ -b /dev/vda ]; then
     if /bin/busybox mount -t ext4 /dev/vda /mnt/probe 2>/dev/null; then
         echo "PROBE-DISK ext4 /dev/vda"
         PROBE_ROOT=/mnt/probe
+        # the oracle runs as uid 1000: it needs to create its scratch dir
+        # on the probe disk (mkdtemp under the mount root)
+        /bin/busybox chown 1000:1000 /mnt/probe
         # The LPE allowlists exactly /usr/bin/secretgate. Put the ext4
         # copy AT that path: stage it on the probe disk and bind-mount
         # the directory over /usr/bin. The attack then hits a
@@ -44,18 +47,36 @@ if [ -b /dev/vda ]; then
 fi
 
 # ---- run the oracle as uid 1000 ----
-RUNAS=""
-if [ -x /bin/setpriv ]; then
-    RUNAS="/bin/setpriv --reuid=1000 --regid=1000 --clear-groups"
+# busybox 1.35's setpriv applet exists but LACKS --reuid/--regid (those
+# are util-linux options — measured in this lab), so probe it at runtime
+# and fall back to busybox su (user "lab", uid 1000, from /etc/passwd).
+RUNAS_OK=none
+if [ -x /bin/setpriv ] && \
+   /bin/setpriv --reuid=1000 --regid=1000 --clear-groups /bin/busybox true >/dev/null 2>&1; then
+    RUNAS_OK=setpriv
     echo "RUNAS setpriv uid=1000"
+elif [ -x /bin/su ] && /bin/busybox grep -q '^lab:' /etc/passwd 2>/dev/null; then
+    RUNAS_OK=su
+    echo "RUNAS su lab (uid=1000)"
 else
-    echo "RUNAS direct (busybox setpriv unavailable; tools self-drop where needed)"
+    echo "RUNAS direct (no working uid-drop; tools self-drop where needed)"
 fi
 
-$RUNAS /tools/detector "$PROBE_ROOT"
+run_oracle() { # $@ = command + args
+    case "$RUNAS_OK" in
+        setpriv) /bin/setpriv --reuid=1000 --regid=1000 --clear-groups "$@" ;;
+        # busybox su: USER THEN -c (verified: "su lab -c id" runs as uid
+        # 1000; "su lab /bin/x" feeds the binary to the shell as a script,
+        # and a leading -s breaks parsing → "-c: applet not found")
+        su)      /bin/su lab -c "$*" ;;
+        *)       "$@" ;;
+    esac
+}
+
+run_oracle /tools/detector "$PROBE_ROOT"
 echo "DETECTOR-RC=$?"
 
-$RUNAS /tools/lpe
+run_oracle /tools/lpe
 echo "LPE-RC=$?"
 
 echo "LAB-DONE"

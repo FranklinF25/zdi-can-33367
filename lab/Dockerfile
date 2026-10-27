@@ -5,15 +5,16 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Kernel-build deps + QEMU + busybox initramfs + e2fsprogs (probe disk,
-# debugfs disk-clean proof). No libssl-dev: the lab config builds with
-# CONFIG_MODULES=n, which drops CONFIG_MODULE_SIG and the sign-file
-# openssl dependency. (If a future kernel pin ever needs openssl headers,
-# add libssl-dev back here.)
+# debugfs disk-clean proof). libssl-dev: CONFIG_MODULES=n drops the
+# sign-file dependency, but x86_64 defconfig still builds certs/extract-cert
+# (CONFIG_SYSTEM_TRUSTED_KEYRING), which includes openssl/bio.h — verified
+# the hard way in this lab (build died at certs/extract-cert without it).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bc \
         bison \
         flex \
         libelf-dev \
+        libssl-dev \
         dwarves \
         cpio \
         gcc \

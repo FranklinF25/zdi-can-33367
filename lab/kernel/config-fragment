@@ -32,6 +32,17 @@ CONFIG_CRYPTO_USER_API_AEAD=y
 CONFIG_CRYPTO_USER_API_HASH=y
 CONFIG_CRYPTO_USER_API_SKCIPHER=y
 
+# --- Kconfig dependency parents (x86_64 defconfig ships none of the
+#     netfilter/tc stacks: without these, olddefconfig silently drops
+#     every leaf option below — build.sh asserts each =y survives).
+CONFIG_NETFILTER=y
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_NETFILTER_NETLINK=y
+CONFIG_XFRM=y
+CONFIG_NETDEVICES=y
+CONFIG_NET_CLS=y
+CONFIG_NET_CLS_ACT=y
+
 # --- NFQUEUE + nftables (the LOCAL_OUT base chain that queues the splice-
 #     backed UDP packet; nfnetlink_queue builds its message with
 #     skb_zerocopy() — the vulnerable helper).
