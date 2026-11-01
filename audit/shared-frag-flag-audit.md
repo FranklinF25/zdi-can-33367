@@ -13,8 +13,9 @@ and audits the frag-transfer helpers of a pinned tree for an eighth —
 negative, in the sibling repo's tradition), with three near-misses recorded
 so the next auditor starts where we stopped.
 
-Status claims dated **as of 2026-10-26**. Analysis only; no exploit code
-(see each repo doc for the ethics posture).
+Status claims dated **as of 2026-11-01** (v7.2 sources fetched
+2026-10-26, see [Reproducibility](#reproducibility)). Analysis only; no
+exploit code (see each repo doc for the ethics posture).
 
 ## The invariant, with v7.2 line evidence
 
@@ -70,7 +71,7 @@ The seven known gaps are seven different helpers making the same omission.
 
 ## The seven known gaps
 
-| # | ID | Dropping path | Discoverer / credit | Fix status as of 2026-10-26 |
+| # | ID | Dropping path | Discoverer / credit | Fix status as of 2026-11-01 |
 |---|---|---|---|---|
 | 1 | CVE-2026-43503 | frag-copy/shift helpers: `__pskb_copy_fclone`, `skb_shift` | Hyunwoo Kim (@v4bel) follow-up series (May 2026) | **fix present in v7.2** — verified at skbuff.c:2260 and skbuff.c:4385 (this audit) |
 | 2 | CVE-2026-46300 | coalescing: `skb_try_coalesce` ("Fragnesia") | published 2026 | **fix present in v7.2** — verified at skbuff.c:6243 (this audit) |
@@ -78,7 +79,7 @@ The seven known gaps are seven different helpers making the same omission.
 | 4 | CVE-2026-64566 | IPTFS | published 2026 | same as #3 |
 | 5 | CVE-2026-80977 | an error-handling helper | published 2026 | fixed per the CVE record; **helper not identified by name in the public summaries we hold** — not re-verified here |
 | 6 | CVE-2026-90049 | an error path inside `skb_zerocopy()` itself | published 2026 | fixed per the CVE record; plausibly the `BUG_ON` → `-EFAULT` hardening series on net-next (Oct 2026), which postdates v7.2 — **not re-verified here** |
-| 7 | **ZDI-CAN-33367** | `skb_zerocopy()` **main success path** | Trend Micro ZDI (report + public PoC via LKML 2026-10-21) | fix = Zizhen Liu's netdev v2 (2026-10-22, Reviewed-by Eric Dumazet, Cc stable) — **UNMERGED**; gap 7 is the subject of this repo |
+| 7 | **ZDI-CAN-33367** | `skb_zerocopy()` **main success path** | Trend Micro ZDI (report + public PoC via LKML 2026-10-21) | fix = Zizhen Liu's netdev v2 (2026-10-22, Reviewed-by Eric Dumazet, Cc stable) — **MERGED**: net tree 2026-10-23, mainline `79dc34beb1fd` (verified 2026-11-01), stable backport pending. Gap 7 is the subject of this repo |
 
 Operational caveat (worth repeating everywhere): **a kernel carrying only
 gap 6's fix is NOT protected against gap 7.** They are different defects in
@@ -145,7 +146,8 @@ is where to look first.
 **No eighth propagation gap found in the audited set.** Every cross-skb
 frag-descriptor mover in the pinned `net/core/skbuff.c` (v7.2) either
 propagates `SKBFL_SHARED_FRAG` (five helpers, lines cited above) or is the
-known gap 7 (`skb_zerocopy()` main path — fix posted, unmerged). The
+known gap 7 (`skb_zerocopy()` main path — fix merged upstream as
+`79dc34beb1fd`, stable backport pending). The
 remaining candidates copy pages (privatizing) or never move descriptors
 across skb boundaries. Near-misses worth keeping on the radar:
 
@@ -164,6 +166,48 @@ transfers (gaps #3-#4) and the error-handling helper of gap #5 were not
 re-verified here (their code lives outside the fetched set), and drivers
 implementing their own frag re-parenting (not in `skbuff.c`) are out of
 scope.
+
+## Post-audit follow-up (2026-10-30): the GRO shared-frag trust bug
+
+Four days after this audit was published, Kyle Zeng (OpenAI) disclosed a
+bug on netdev that is **not an 8th propagation gap** — the honest
+negative above stands — but proves the root class outlives gap 7:
+code that **trusts the contents** of shared frags, not just code that
+drops the marker. Recorded here because it is the first public
+confirmation that the surface extends past the flag itself.
+
+"[PATCH net v2] net: gro: avoid parsing headers from shared fragments"
+(<https://lore.kernel.org/netdev/20261031050752.31869-1-kylebot@openai.com/>,
+v1 2026-10-30):
+
+- **Mechanism.** When an skb has an empty linear head,
+  `skb_gro_reset_offset()` (`net/core/gro.c`) exposes the first page
+  fragment **directly** to GRO's header parsers (the `frag0` fast path).
+  For an `SKBFL_SHARED_FRAG` skb, those bytes may still be **writable
+  through a file mapping** — so headers validated during receive can
+  differ from the headers later copied into the linear head and used
+  during completion.
+- **Impact.** Changing an IPv6 destination-options length between the
+  short and full header fetches in `ipv6_gro_pull_exthdrs()` makes
+  `ipv6_gro_complete()` pass an **out-of-bounds offset** to
+  `udp6_gro_complete()` — a KASAN slab-out-of-bounds read triggered by a
+  userspace reproducer **as UID 1000 on an unmodified kernel**. The same
+  completion path writes the UDP checksum and length through the invalid
+  offset. The packet carries trusted TCP GSO metadata and spliced file
+  data, so it reaches completion without an skb zerocopy destructor or a
+  second GRO packet — no second peer required.
+- **Fix (v2).** One condition, `+2/-1` in `net/core/gro.c`: disable the
+  direct-fragment fast path for skbs with externally writable fragments
+  — `if (headlen || skb_has_shared_frag(skb)) return;` — so every header
+  is pulled into the linear head before it is inspected
+  (`Fixes: dff0b0161ad5`, Cc stable). Unmerged as of 2026-11-01.
+- **Two things worth noting for auditors.** First, the fix makes **GRO a
+  second consumer of `SKBFL_SHARED_FRAG`** (after ESP): the marker's
+  load-bearing surface is growing, which strengthens the case for
+  auditing every propagation hop. Second, the report states plainly:
+  "The issue was found by an LLM" — with Codex credited for review and
+  analysis assistance — an early data point for LLM-assisted kernel
+  auditing in exactly this bug class.
 
 ## Related-but-different upstream hardening (context, not gaps)
 
@@ -217,8 +261,9 @@ a52475b2e7d6c0d0bf90d03e4c3343ff15ff514c21761de2fe392106722695c8  ip6_output-v7.
 
 The vulnerability, chain, and validator demo are Trend Micro ZDI's (public
 via the accidental LKML CC, 2026-10-21); the 2-line fix is Zizhen Liu's
-(netdev v2, 2026-10-22); the Dirty Frag root cause and the shared-frag fix
+(netdev v2, 2026-10-22; merged upstream as `79dc34beb1fd`); the Dirty Frag root cause and the shared-frag fix
 approach (with Kuan-Ting Chen's patch) are Hyunwoo Kim's (@v4bel); the
-"seven gaps" framing follows Sysdig TRT's 2026-10-24 summary. The
+"seven gaps" framing follows Sysdig TRT's 2026-10-24 summary. The GRO
+shared-frag follow-up (2026-10-30) is Kyle Zeng's (OpenAI). The
 helper-by-helper walk, verdict table, near-miss list, and pinned-tree line
 evidence are this repo's original work.

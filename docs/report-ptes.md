@@ -9,7 +9,7 @@ of read-only files without ever opening them for writing. Claims trace
 to this repo's artifacts or the public record cached in `odd/research/`.
 The report, chain, and validator demo are Trend Micro ZDI's (LKML,
 2026-10-21); the fix is Zizhen Liu's. Status claims are dated
-**as of 2026-10-26**.
+**as of 2026-11-01**.
 
 ## 1. Pre-engagement Interactions
 
@@ -26,14 +26,15 @@ The report, chain, and validator demo are Trend Micro ZDI's (LKML,
 - **ZDI report** (LKML, 2026-10-21; `odd/research/zdi-lkml-report-33367.txt`):
   "Linux Kernel skbuff skb_zerocopy Improper Ownership Management Local
   Privilege Escalation Vulnerability"; tested on 7.3-rc1 / Debian trixie;
-  **no CVE as of 2026-10-26** (Sysdig TRT, 2026-10-24).
+  **no CVE as of 2026-11-01** (Sysdig TRT, 2026-10-24; re-verified 2026-11-01).
 - **The leak**: ZDI sent six reports to security@kernel.org on
   2026-10-20/21 but mistakenly CC'd public lists (LKML, netdev,
   connman); details + three PoCs public before fixes. Table:
   [leak-timeline](leak-timeline.md).
-- **Fix** (unmerged as of 2026-10-26): "[PATCH v2 net] net: skbuff:
+- **Fix** (merged to mainline as `79dc34beb1fd`, verified 2026-11-01;
+  stable backport pending): "[PATCH v2 net] net: skbuff:
   propagate shared-frag marker in skb_zerocopy()", Zizhen Liu, netdev
-  2026-10-22, Reviewed-by Eric Dumazet, Cc stable
+  2026-10-22, Reviewed-by Eric Dumazet, Cc stable, net tree 2026-10-23
   (`odd/research/netdev-v2-propagate-shared-frag.txt`). Dumazet's LKML
   reply the same day: the team already had a report *with patch* from
   another source ~1 week before the leak
@@ -42,10 +43,13 @@ The report, chain, and validator demo are Trend Micro ZDI's (LKML,
   *with the Dirty Frag fix installed* — CloudLinux 9/10, Debian 12/13,
   Ubuntu 24.04/26.04 (bypasses Ubuntu's AppArmor userns restriction);
   CentOS 6/7 clean.
-- **Vendor response** (as of 2026-10-26): AlmaLinux testing kernels
-  (AL8 `4.18.0-553.177.2.el8_10`, AL9 `5.14.0-687.59.2.el9_8`, AL10
-  `6.12.0-211.68.2.el10_2`); KernelCare livepatch EL10 out / EL9 review
-  / EL8 in progress; no fixed RHEL kernel yet.
+- **Vendor response** (as of 2026-11-01): **Fedora** shipped the fix
+  early (F43 `7.2.13-100`, F44 `7.2.13-200`, 2026-10-26/27);
+  **AlmaLinux production kernels** since 2026-10-28 (AL8
+  `4.18.0-553.178.1.el8_10`, AL9 `5.14.0-687.60.1.el9_8`, AL10
+  `6.12.0-211.69.1.el10_2`; the 2026-10-23 testing kernels also carry
+  it); Rocky 9.8's same-NVR kernel does **not** carry it; KernelCare
+  livepatch EL9+EL10 out / EL8 ready
 - **Detection**: Sysdig TRT (2026-10-24) rule "Page Cache Poisoning via
   Spliced File Pages to Loopback" matches the exploit's syscall
   sequence.
@@ -176,13 +180,17 @@ independent safe oracle, `poc/detector.c` (rationale: writeup §0, §3):
 ### Remediation
 
 - **Primary**: a kernel carrying Zizhen Liu's 2-line fix (netdev v2,
-  2026-10-22, Reviewed-by Eric Dumazet, Cc stable). **As of 2026-10-26:
-  unmerged upstream**; not in any released distribution kernel; tagged
-  for stable — track netdev and vendor release notes.
-- **Vendor testing kernels** (AlmaLinux, 2026-10-23): AL8
-  `kernel-4.18.0-553.177.2.el8_10`, AL9 `kernel-5.14.0-687.59.2.el9_8`,
-  AL10 `kernel-6.12.0-211.68.2.el10_2`; KernelCare livepatch EL10 out /
-  EL9 review / EL8 in progress; no fixed RHEL kernel yet.
+  2026-10-22, Reviewed-by Eric Dumazet, Cc stable; net tree 2026-10-23).
+  **Merged to mainline as `79dc34beb1fd`** (verified 2026-11-01); **not
+  yet in upstream stable releases** (7.2.14/7.3.1 of 2026-10-30 predate
+  it) — track stable and vendor release notes.
+- **Shipped fixed kernels**: Fedora F43 `7.2.13-100` / F44 `7.2.13-200`
+  (2026-10-26/27); AlmaLinux production (2026-10-28): AL8
+  `kernel-4.18.0-553.178.1.el8_10`, AL9 `kernel-5.14.0-687.60.1.el9_8`,
+  AL10 `kernel-6.12.0-211.69.1.el10_2`; KernelCare livepatch EL9+EL10
+  out / EL8 ready; no fixed RHEL kernel yet. **NVR trap**: Rocky 9.8's
+  `5.14.0-687.60.1.el9_8` matches AlmaLinux's fixed NVR but lacks the
+  fix — verify via the rpm changelog.
 - **CVE-2026-90049's fix is not coverage** — different bug, same
   function.
 
@@ -201,13 +209,15 @@ independent safe oracle, `poc/detector.c` (rationale: writeup §0, §3):
   Falco adaptation (attribution in-file). The exploit leaves no disk
   trace, so runtime telemetry is the practical sensor.
 
-### Risk statement (as of 2026-10-26)
+### Risk statement (as of 2026-11-01)
 
 Unpatched systems face an unprivileged local privilege escalation whose
 public exploit works on current AlmaLinux, CloudLinux, Debian, and
 Ubuntu releases — *including kernels already carrying the Dirty Frag
 fix* — with no CVE to scan for and a working PoC open since 2026-10-21.
-Multi-user hosts, jump boxes, and container nodes on affected kernels
-should mitigate now (above) and patch the day the vendor ships the
-`skb_zerocopy()` fix. CentOS 6/7 clean. No in-the-wild exploitation
-known as of 2026-10-26.
+The upstream fix is merged to mainline (`79dc34beb1fd`) but has not yet
+reached upstream stable releases or most vendors (Fedora and AlmaLinux
+already ship it). Multi-user hosts, jump boxes, and container nodes on
+affected kernels should mitigate now (above) and patch the day the
+vendor ships the `skb_zerocopy()` fix. CentOS 6/7 clean. No in-the-wild
+exploitation known as of 2026-11-01.

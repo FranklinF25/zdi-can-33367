@@ -90,8 +90,9 @@ modern eBPF probe, or gVisor/Modern BPF). Fields used: `evt.type`,
 - Vulnerability analysis and public PoC: Trend Micro ZDI (LKML, 2026-10-21) —
   <https://lkml.iu.edu/2610.2/14824.html>
 - Fix: Zizhen Liu, "[PATCH v2 net] net: skbuff: propagate shared-frag
-  marker in skb_zerocopy()" (netdev, 2026-10-22, unmerged as of
-  2026-10-26) — <https://lists.openwall.net/netdev/2026/10/22/204>
+  marker in skb_zerocopy()" (netdev, 2026-10-22; merged upstream as
+  `79dc34beb1fd`, verified 2026-11-01; stable backports pending) —
+  <https://lists.openwall.net/netdev/2026/10/22/204>
 
 Rules licensed under the Falco repository's terms (Apache-2.0), consistent
 with the Falco rules ecosystem.

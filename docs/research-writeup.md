@@ -4,13 +4,14 @@ The investigation narrative: method, family lineage, dead ends, detector
 and audit design, and portable lessons. Companion documents: the one-page
 datasheet ([finding-sheet](finding-sheet.md)), the structured
 [PTES report](report-ptes.md), and the
-[leak timeline](leak-timeline.md). Status claims dated as of 2026-10-26.
+[leak timeline](leak-timeline.md). Status claims dated as of 2026-11-01.
 
 ## 0. Method: the diff is the spec
 
-This bug has no CVE record to distrust — as of 2026-10-26 it has no CVE
-at all. What it does have is better: a two-line fix on netdev, and the
-public ZDI report. The method is the same as in our sibling repo
+This bug has no CVE record to distrust — as of 2026-11-01 it still has
+no CVE at all. What it does have is better: a two-line fix, now merged
+upstream as `79dc34beb1fd` (verified 2026-11-01; stable backport
+pending), and the public ZDI report. The method is the same as in our sibling repo
 ([CVE-2026-31431](https://github.com/FranklinF25/cve-2026-31431),
 "Copy Fail"): **start from the diff and the affected sources; treat every
 prose description as a hint, not evidence.** The primary sources were

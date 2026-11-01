@@ -17,8 +17,9 @@ else. Both flavors share the identical config fragment on top of
 `x86_64_defconfig`.
 
 **Why v7.2:** the Dirty Frag fix `f4c50a4034e6` merged 2026-05-07
-(mainline ≥ v7.1), and the `skb_zerocopy()` propagation fix is still
-unmerged as of 2026-10-26 — so v7.2 is a tag that satisfies both sides of
+(mainline ≥ v7.1), and v7.2 predates the `skb_zerocopy()` propagation
+fix (netdev v2 2026-10-22, merged upstream as `79dc34beb1fd` after
+2026-10-26) — so v7.2 is a tag that satisfies both sides of
 the differential.
 
 ## Prerequisites
@@ -190,8 +191,11 @@ still lands, as `LPE-DIVERGED` proves).
 
 ## Notes
 
-- The netdev v2 fix was still **unmerged** as of 2026-10-26 and no CVE
-  had been assigned; the public PoC already circulates via the LKML
+- The netdev v2 fix was **unmerged** when this lab was built (2026-10-26);
+  it has since merged upstream as `79dc34beb1fd` (verified 2026-11-01)
+  but had not yet reached upstream stable releases — v7.2 remains a
+  valid vulnerable base for the A/B delta. No CVE assigned as of
+  2026-11-01; the public PoC already circulates via the LKML
   disclosure. This lab is for defensive research and education only.
 - Container jobs run as root, so `lab/out/` and `lab/kernel/src/`
   contents are root-owned on the host (both are gitignored). Clean them

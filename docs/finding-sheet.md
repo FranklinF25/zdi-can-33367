@@ -1,19 +1,20 @@
 # Finding Sheet — ZDI-CAN-33367 (Linux kernel `skb_zerocopy()` drops `SKBFL_SHARED_FRAG`)
 
-One-page datasheet. Status claims are dated **as of 2026-10-26**: no CVE is
-assigned yet, and the upstream fix (v2) is still unmerged. Analysis only — the
+One-page datasheet. Status claims are dated **as of 2026-11-01**: no CVE is
+assigned yet, and the upstream fix is **merged to mainline** (`79dc34beb1fd`)
+but not yet in any upstream stable release. Analysis only — the
 public PoC's source is not reproduced here (see Scope & ethics at the end).
 
 | Field | Value |
 |---|---|
-| ID | ZDI-CAN-33367 (Trend Micro ZDI) — **no CVE assigned as of 2026-10-26** |
+| ID | ZDI-CAN-33367 (Trend Micro ZDI) — **no CVE assigned as of 2026-11-01** |
 | ZDI title | "Linux Kernel skbuff skb_zerocopy Improper Ownership Management Local Privilege Escalation Vulnerability" |
 | Component | Linux kernel — `skb_zerocopy()` (`net/core/skbuff.c`); consumers: nfnetlink_queue (NFQUEUE `NFQA_PAYLOAD`) and Open vSwitch upcalls |
 | Class | Page-cache write via in-place ESP decrypt over splice-backed skb frags → local privilege escalation |
 | CVSS 3.1 | 7.8 HIGH — `AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H` |
 | Reported by | Trend Micro ZDI; tested by ZDI on kernel 7.3-rc1 / Debian trixie (validator: `KERNEL release=7.3.0-rc1 machine=x86_64`). Full report + public PoC reached LKML 2026-10-20/21 via an accidental public CC (see Prior art) |
 | Introduced | `af2806f8f90a` "net: Export skb_zerocopy() to zerocopy from one skb to another" (~kernel 3.14) |
-| Fix | Zizhen Liu, "[PATCH v2 net] net: skbuff: propagate shared-frag marker in skb_zerocopy()" — **unmerged as of 2026-10-26** |
+| Fix | Zizhen Liu, "net: skbuff: propagate shared-frag marker in skb_zerocopy()" — netdev v2 2026-10-22 → net tree 2026-10-23 → **mainline `79dc34beb1fd`** (verified 2026-11-01); stable backport pending |
 | Attack vector | Local, unprivileged, race-free; no KASLR leak, no extra capabilities, works with `NoNewPrivs=1` |
 | Requirements | Unprivileged user namespaces + `nlmon`, `nfnetlink_queue`/`nft_queue`, `cls_u32`, `act_pedit`, `act_mirred`, `esp4` (plus `xfrm_user`, `hmac(sha256)`, `cbc(aes)`) |
 
@@ -41,20 +42,26 @@ Root repro matrix (TuxCare, 2026-10-22):
 | CentOS 6 | Not affected | 2.6.32 predates `skb_zerocopy()` |
 | CentOS 7 | Not affected | 3.10 has the helper, but its ESP code always makes a private copy of nonlinear data |
 
-AlmaLinux testing kernels referenced for verification (all carry the Dirty Frag
-fix, all still reproduce): `kernel-4.18.0-553.177.2.el8_10` (AL8),
-`kernel-5.14.0-687.59.2.el9_8` (AL9), `kernel-6.12.0-211.68.2.el10_2` (AL10).
-KernelCare rebootless patch: out for EL10 (built on the upstream fix
-candidate), EL9 in review, EL8 in progress; no fixed RHEL kernel yet —
-as of 2026-10-26.
+Fixed-kernel rollout (verified 2026-11-01): **Fedora shipped early** — F43
+`kernel-7.2.13-100` and F44 `kernel-7.2.13-200` carry the fix backported
+atop v7.2.13 (changelog 2026-10-26). **AlmaLinux moved fixed kernels to
+production on 2026-10-28**: `kernel-4.18.0-553.178.1.el8_10` (AL8),
+`kernel-5.14.0-687.60.1.el9_8` (AL9), `kernel-6.12.0-211.69.1.el10_2`
+(AL10) — the 2026-10-23 testing kernels also carry it. **Trap**: Rocky Linux
+9.8 ships `kernel-5.14.0-687.60.1.el9_8` — the *same NVR* as the fixed
+AlmaLinux kernel — **without** the fix (verified via rpm changelog by
+centminmod, 2026-10-29); judge by changelog, not NVR. KernelCare rebootless
+patch (2026-10-27): out for **EL9 and EL10** on AlmaLinux, CloudLinux, RHEL,
+Oracle Linux, Rocky; EL8 ready for release; Debian and Ubuntu in progress —
+no fixed RHEL kernel yet as of 2026-11-01.
 
 ## Fix commits
 
-| Commit | Role | Status as of 2026-10-26 |
+| Commit | Role | Status as of 2026-11-01 |
 |---|---|---|
 | `af2806f8f90a` | Introducing commit — exports `skb_zerocopy()` for skb→skb zerocopy; the flag drop ships with it (~3.14) | present in every kernel since ~3.14 |
 | `f4c50a4034e6` | Dirty Frag fix (Hyunwoo Kim @v4bel, CVE-2026-43284) — "xfrm: esp: avoid in-place decrypt on shared skb frags"; ESP honors `SKBFL_SHARED_FRAG` | merged 2026-05-07; in mainline ≥ v7.1. Necessary but **not sufficient** — defeated whenever a transfer path drops the flag |
-| netdev v2 (no SHA yet) | "[PATCH v2 net] net: skbuff: propagate shared-frag marker in skb_zerocopy()" — Zizhen Liu, Reviewed-by Eric Dumazet, 2026-10-22, Cc stable | **unmerged** — <https://lists.openwall.net/netdev/2026/10/22/204> |
+| `79dc34beb1fd` | "[PATCH v2 net] net: skbuff: propagate shared-frag marker in skb_zerocopy()" — Zizhen Liu, Reviewed-by Eric Dumazet, 2026-10-22, Cc stable | **merged** — posted 2026-10-22 (<https://lists.openwall.net/netdev/2026/10/22/204>), committed to the net tree 2026-10-23, verified in Linus' tree 2026-11-01 (<https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=79dc34beb1fdb3da79753e51e15c68591a2561fe>). **Not in 7.2.14/7.3.1** (2026-10-30, verified via ChangeLogs) — stable backport pending |
 
 ## Root cause — anchored to the 2-line fix
 
@@ -184,7 +191,7 @@ Debian trixie guest, run as unprivileged `testuser`):
 | blacklist `nlmon` + `act_pedit` | removes the capture and rewrite primitives the chain needs |
 | Kubernetes seccomp `RuntimeDefault` | blocks `unshare(CLONE_NEWUSER)` (Docker's default seccomp already does) |
 | Ubuntu AppArmor userns restriction | **not a mitigation** — bypassed by the PoC |
-| KernelCare rebootless patch | EL10 out (built on the upstream fix candidate), EL9 in review, EL8 in progress — as of 2026-10-26; no fixed RHEL kernel yet |
+| KernelCare rebootless patch | EL9 + EL10 out (AlmaLinux, CloudLinux, RHEL, Oracle, Rocky), EL8 ready, Debian/Ubuntu in progress — as of 2026-10-27. Verify with `kcarectl --update && kcarectl --patch-info \| grep -i 33367` |
 
 Detection: Sysdig TRT rule **"Page Cache Poisoning via Spliced File Pages to
 Loopback"** — matches the distinctive single-process sequence: userns+netns
@@ -196,11 +203,13 @@ unshare → nlmon up → XFRM state → NFQUEUE rule → tc pedit+redirect →
 - **ZDI advisory + public PoC** — Trend Micro ZDI; the report (with validator
   stdout and PoC source) became public on LKML/netdev 2026-10-20/21 through an
   accidental CC, before fixes existed — part of a 6-report batch, none with a
-  CVE at leak time; no known in-the-wild exploitation as of 2026-10-26 —
+  CVE at leak time; no known in-the-wild exploitation as of 2026-11-01 —
   <https://lkml.iu.edu/2610.2/14824.html>
 - **Upstream fix** — Zizhen Liu `<pointerliu@126.com>`, netdev v2, 2026-10-22,
-  Reviewed-by Eric Dumazet, Cc stable; unmerged as of 2026-10-26 —
-  <https://lists.openwall.net/netdev/2026/10/22/204>
+  Reviewed-by Eric Dumazet, Cc stable; merged to mainline as `79dc34beb1fd`
+  (net tree 2026-10-23; verified in Linus' tree 2026-11-01) —
+  <https://lists.openwall.net/netdev/2026/10/22/204> ·
+  <https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=79dc34beb1fdb3da79753e51e15c68591a2561fe>
 - **Eric Dumazet LKML reply** (2026-10-22) — the kernel team had already
   received a report *with patch* from another source ~1 week before ZDI's leak —
   <https://lkml.iu.edu/2610.2/15245.html>
@@ -218,4 +227,4 @@ unshare → nlmon up → XFRM state → NFQUEUE rule → tc pedit+redirect →
 
 **Scope & ethics:** analysis and attribution only. The public PoC already
 circulates via LKML; nothing in this repo reproduces its source or hardens it
-into a turnkey exploit. All status claims dated 2026-10-26.
+into a turnkey exploit. Status claims updated 2026-11-01.
